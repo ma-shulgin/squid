@@ -3,6 +3,7 @@ import * as pg from "pg"
 import {Block, BlockData, Call, Event, Extrinsic, Metadata, Warning} from "./model"
 import {toJSON, toJsonString} from "./util/json"
 import WritableStream = NodeJS.WritableStream
+import duckdb from "duckdb";
 
 
 export interface Sink {
@@ -184,6 +185,100 @@ export class WritableSink implements Sink {
         if (this.drainHandle) {
             this.drainHandle.reject(err)
             this.drainHandle = undefined
+        }
+    }
+}
+
+
+export class DuckDBSink implements Sink {
+    constructor(private db: duckdb.Database) {}
+
+    write(block: BlockData): Promise<void> {
+        return this.tx(async () => {
+            if (block.metadata) {
+                await this.saveMetadata(block.metadata)
+            }
+            await this.saveHeader(block.header)
+            await this.saveExtrinsics(block.extrinsics)
+            await this.saveCalls(block.calls)
+            await this.saveEvents(block.events)
+            if (block.warnings?.length) {
+                await this.saveWarnings(block.warnings)
+            }
+        })
+    }
+
+    private run(sql: string, ...params: any[]): Promise<void> {
+        return new Promise((resolve, reject) => {
+            this.db.run(sql, ...params, (err: Error | null) => {
+                err ? reject(err) : resolve()
+            })
+        })
+    }
+
+    private saveMetadata(metadata: Metadata): Promise<void> {
+        return this.run(
+            "INSERT INTO metadata (spec_version, block_height, block_hash, hex) VALUES ($1, $2, $3, $4)",
+            metadata.spec_version, metadata.block_height, metadata.block_hash, metadata.hex,
+        )
+    }
+
+    private saveHeader(block: Block): Promise<void> {
+        return this.run(
+            "INSERT INTO block (id, height, hash, parent_hash, timestamp) VALUES ($1, $2, $3, $4, $5)",
+            block.id, block.height, block.hash, block.parent_hash, block.timestamp,
+        )
+    }
+
+    private async saveExtrinsics(extrinsics: Extrinsic[]) {
+        for (let index = 0; index < extrinsics.length; index++) {
+            const extrinsic = extrinsics[index]
+            await this.run(
+                "INSERT INTO extrinsic (id, block_id, index_in_block, name, signature, success, hash, call_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                extrinsic.id, extrinsic.block_id, extrinsic.index_in_block, extrinsic.name, toJsonString(extrinsic.signature) || null, extrinsic.success, toJSON(extrinsic.hash), extrinsic.call_id,
+            );
+        }
+    }
+
+    private async saveCalls(calls: Call[]) {
+        for (let index = 0; index < calls.length; index++) {
+            const call = calls[index]
+            await this.run(
+                "INSERT INTO call (id, index, extrinsic_id, parent_id, success, name, args) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                call.id, call.index, call.extrinsic_id, call.parent_id || null, call.success, call.name, toJsonString(call.args) || null,
+            );
+        }
+    }
+
+    private async saveEvents(events: Event[]) {
+        for (let index = 0; index < events.length; index++) {
+            const event = events[index]
+            await this.run(
+                "INSERT INTO event (id, block_id, index_in_block, phase, extrinsic_id, call_id, name, args) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                event.id, event.block_id, event.index_in_block, event.phase, event.extrinsic_id || null, event.call_id || null, event.name, toJsonString(event.args) || null,
+            )
+        }
+    }
+
+    private async saveWarnings(warnings: Warning[]) {
+        for (let index = 0; index < warnings.length; index++) {
+            const warning = warnings[index]
+            await this.run(
+                "INSERT INTO warning (block_id, message) VALUES ($1, $2)",
+                warning.block_id, warning.message,
+            );
+        }
+    }
+
+    private async tx<T>(cb: () => Promise<T>): Promise<T> {
+        await this.run('BEGIN')
+        try {
+            let result = await cb()
+            await this.run('COMMIT')
+            return result
+        } catch(e: any) {
+            await this.run('ROLLBACK').catch(() => {})
+            throw e
         }
     }
 }

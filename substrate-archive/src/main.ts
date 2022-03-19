@@ -8,8 +8,9 @@ import path from "path"
 import * as pg from "pg"
 import {migrate} from "postgres-migrations"
 import {Ingest} from "./ingest"
-import {PostgresSink, Sink, WritableSink} from "./sink"
+import {PostgresSink, Sink, WritableSink, DuckDBSink} from "./sink"
 import {ProgressTracker, SpeedTracker} from "./util/tracking"
+import duckdb from "duckdb"
 
 
 ServiceManager.run(async sm => {
@@ -56,17 +57,27 @@ ServiceManager.run(async sm => {
             startBlock = Math.max(startBlock, height == null ? 0 : height + 1)
             sink = new PostgresSink(db)
         } else {
-            let out = fs.createWriteStream(options.out, {flags: 'a'})
+            // let out = fs.createWriteStream(options.out, {flags: 'a'})
+            // sm.add({
+            //     close() {
+            //         return new Promise((resolve, reject) => {
+            //             out.on('error', err => reject(err))
+            //             out.on('close', () => resolve())
+            //             out.end()
+            //         })
+            //     }
+            // })
+            // sink = new WritableSink(out)
+            let db = new duckdb.Database(options.out)
             sm.add({
                 close() {
-                    return new Promise((resolve, reject) => {
-                        out.on('error', err => reject(err))
-                        out.on('close', () => resolve())
-                        out.end()
+                    return exportDuckDbToParquet(db).then(() => {
+                        closeDuckDb(db)
                     })
                 }
             })
-            sink = new WritableSink(out)
+            await migrateDuckDb(db)
+            sink = new DuckDBSink(db)
         }
     } else {
         sink = new WritableSink(process.stdout)
@@ -95,6 +106,9 @@ ServiceManager.run(async sm => {
         writeSpeed.inc(1, time)
         blockProgress.inc(1, time)
         lastBlock = block.header.height
+        if (lastBlock == 10000) {
+            await sm.stop()
+        }
     }
 })
 
@@ -129,4 +143,80 @@ function positiveInteger(s: string): number {
     let n = parseInt(s)
     assert(!isNaN(n) && n >= 0)
     return n
+}
+
+
+async function migrateDuckDb(db: duckdb.Database): Promise<void> {
+    return new Promise((resolve, reject) => {
+        db.exec(
+        `
+        CREATE TABLE metadata (
+            spec_version integer PRIMARY KEY,
+            block_height integer NOT NULL,
+            block_hash char(66) NOT NULL,
+            hex varchar NOT NULL
+        );
+        CREATE TABLE block (
+            id char(16) PRIMARY KEY,
+            height integer NOT NULL,
+            hash char(66) NOT NULL,
+            parent_hash char(66) NOT NULL,
+            timestamp timestamptz NOT NULL
+        );
+        CREATE TABLE extrinsic (
+            id varchar(23) PRIMARY KEY,
+            block_id char(16) NOT NULL,
+            index_in_block integer NOT NULL,
+            name varchar NOT NULL,
+            signature varchar,
+            success bool not null,
+            hash char(66) NOT NULL,
+            call_id char(23) NOT NULL
+        );
+        CREATE TABLE call (
+            id char(23) primary key,
+            index integer not null,
+            extrinsic_id char(23) not null,
+            parent_id varchar(23),
+            success bool not null,
+            name varchar not null,
+            args varchar
+        );
+        CREATE TABLE event (
+            id char(23) PRIMARY KEY,
+            block_id char(16) not null,
+            index_in_block integer NOT NULL,
+            phase varchar NOT NULL,
+            extrinsic_id char(23),
+            call_id char(23),
+            name varchar NOT NULL,
+            args varchar
+        );
+        CREATE TABLE warning (
+            block_id char(16),
+            message varchar
+        );
+        `,
+        (err: any) => {
+            err ? reject(err) : resolve()
+        })
+    })
+}
+
+
+function closeDuckDb(db: duckdb.Database): Promise<void> {
+    return new Promise((resolve, reject) => {
+        db.close((err: any) => {
+            err ? reject(err) : resolve()
+        })
+    })
+}
+
+
+function exportDuckDbToParquet(db: duckdb.Database): Promise<void> {
+    return new Promise((resolve, reject) => {
+        db.run("EXPOR DATABASE '10000' (FORMAT PARQUET)", (err) => {
+            err ? reject(err) : resolve()
+        })
+    })
 }

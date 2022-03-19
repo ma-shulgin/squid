@@ -47,7 +47,7 @@ export class ServiceManager {
         schedule()
     }
 
-    private async stop(): Promise<boolean> {
+    async stop(): Promise<boolean> {
         let ok = true
         for (let i = this.services.length - 1; i >= 0; i--) {
             let err: Error | void
