@@ -45,7 +45,7 @@ jobs:
           tags: ${{ github.event.inputs.tag }}
 
       - name: Publish
-        run: "docker push subsquid/$TARGET:$TAG"
+        run: "docker push mashulgin/$TARGET:$TAG"
         env:
           TARGET: ${{ github.event.inputs.target }}
           TAG: ${{ github.event.inputs.tag }}
