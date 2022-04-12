@@ -43,7 +43,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           target: ${ TARGET }
-          tags: mashulgin/{ $TARGET }:$ { $TAG }
+          tags: mashulgin/${ TARGET }:${ TAG }
         env:
           TARGET: ${{ github.event.inputs.target }}
           TAG: ${{ github.event.inputs.tag }}
