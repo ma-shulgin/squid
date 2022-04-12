@@ -41,8 +41,11 @@ jobs:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
           platforms: linux/amd64,linux/arm64
-          target: ${{ github.event.inputs.target }}
-          tags: ${{ github.event.inputs.tag }}
+          target: $TARGET
+          tags: mashulgin/$TARGET:$TAG
+        env:
+          TARGET: ${{ github.event.inputs.target }}
+          TAG: ${{ github.event.inputs.tag }}
 
       - name: Publish
         run: "docker push mashulgin/$TARGET:$TAG"
